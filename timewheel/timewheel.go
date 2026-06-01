@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/noble-gase/xe/worker"
+	"github.com/noble-gase/xenon/worker"
 )
 
 type (

@@ -1,4 +1,4 @@
-module github.com/noble-gase/xe
+module github.com/noble-gase/xenon
 
 go 1.25.0
 

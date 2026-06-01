@@ -1,6 +1,6 @@
 package timewheel
 
-import "github.com/noble-gase/xe/worker"
+import "github.com/noble-gase/xenon/worker"
 
 // Option 时间轮选项
 type Option func(tw *timewheel)

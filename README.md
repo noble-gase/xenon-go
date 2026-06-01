@@ -1,15 +1,15 @@
-# 氙-Xe
+# xenon-go
 
 [![golang](https://img.shields.io/badge/Language-Go-green.svg?style=flat)](https://golang.org)
-[![pkg.go.dev](https://img.shields.io/badge/dev-reference-007d9c?logo=go&logoColor=white&style=flat)](https://pkg.go.dev/github.com/noble-gase/xe)
+[![pkg.go.dev](https://img.shields.io/badge/dev-reference-007d9c?logo=go&logoColor=white&style=flat)](https://pkg.go.dev/github.com/noble-gase/xenon)
 [![MIT](http://img.shields.io/badge/license-MIT-brightgreen.svg)](http://opensource.org/licenses/MIT)
 
-[氙-Xe] Go协程并发复用，降低CPU和内存负载
+[氙-Xenon] Go协程并发复用，降低CPU和内存负载
 
 ## 安装
 
 ```shell
-go get -u github.com/noble-gase/xe
+go get -u github.com/noble-gase/xenon
 ```
 
 | 模块      | 说明                        |
@@ -33,6 +33,8 @@ cpu: Apple M4
 ### 场景-1
 
 ```go
+import "github.com/noble-gase/xenon/worker"
+
 func main() {
     ctx := context.Background()
 
@@ -60,6 +62,8 @@ func main() {
 ### 场景-2
 
 ```go
+import "github.com/noble-gase/xenon/worker"
+
 func main() {
     ctx := context.Background()
 
