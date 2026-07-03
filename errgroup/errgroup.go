@@ -142,9 +142,6 @@ func (g *group) spawn() {
 			fn := g.cache[0]
 			g.cache[0] = nil // 避免引用滞留
 			g.cache = g.cache[1:]
-			if len(g.cache) == 0 {
-				g.cache = nil // 排空即释放底层数组，避免积压峰值内存滞留
-			}
 			g.mutex.Unlock()
 
 			// 执行任务
