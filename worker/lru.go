@@ -11,6 +11,7 @@ import (
 type worker struct {
 	id        int64
 	keepalive atomic.Int64
+	busy      atomic.Bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -52,6 +53,12 @@ func (lru *WorkerLRU) IdleCheck(timeout time.Duration) {
 
 	for e := lru.wkList.Back(); e != nil; {
 		w := e.Value.(*worker)
+
+		// 任务执行中，跳过
+		if w.busy.Load() {
+			e = e.Prev()
+			continue
+		}
 
 		// 未超时，直接结束
 		if now-w.keepalive.Load() < timeout.Nanoseconds() {

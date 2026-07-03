@@ -2,207 +2,178 @@ package worker
 
 import (
 	"context"
-	"fmt"
-	"math"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNormal(t *testing.T) {
-	ctx := context.Background()
-
+func TestPoolExecutesSubmittedTasks(t *testing.T) {
 	p := New(2)
 	defer p.Close()
 
-	m := make(map[int]int)
-	for i := range 4 {
-		m[i] = i
-	}
-
 	var wg sync.WaitGroup
-	wg.Add(2)
-	_ = p.Go(ctx, func(context.Context) {
-		m[1]++
-		wg.Done()
-	})
-	_ = p.Go(ctx, func(context.Context) {
-		m[2]++
-		wg.Done()
-	})
-	wg.Wait()
+	var completed int32
 
-	t.Log(m)
-}
-
-func sleep1s(context.Context) {
-	time.Sleep(time.Second)
-}
-
-func TestLimit(t *testing.T) {
-	ctx := context.Background()
-
-	var wg sync.WaitGroup
-
-	// 没有并发数限制
-	now := time.Now()
-	for range 4 {
+	for range 20 {
 		wg.Add(1)
-		go func() {
-			sleep1s(ctx)
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-	sec := math.Round(time.Since(now).Seconds())
-	if sec != 1 {
-		t.FailNow()
-	}
-
-	// 限制并发数
-	p := New(2)
-	defer p.Close()
-	now = time.Now()
-	for range 4 {
-		wg.Add(1)
-		_ = p.Go(ctx, func(ctx context.Context) {
-			sleep1s(ctx)
-			wg.Done()
+		err := p.Go(context.Background(), func(context.Context) {
+			defer wg.Done()
+			atomic.AddInt32(&completed, 1)
 		})
+		assert.NoError(t, err)
 	}
-	wg.Wait()
-	sec = math.Round(time.Since(now).Seconds())
-	if sec != 2 {
-		t.FailNow()
-	}
+
+	waitGroup(t, &wg, time.Second)
+	assert.Equal(t, int32(20), atomic.LoadInt32(&completed))
 }
 
-func TestRecover(t *testing.T) {
-	ch := make(chan struct{})
-	defer close(ch)
+func TestPoolLimit(t *testing.T) {
+	p := New(2)
+	defer p.Close()
 
-	p := New(2, WithPanicHandler(func(ctx context.Context, err interface{}, stack []byte) {
-		t.Log("[error] job panic:", err)
-		t.Log("[stack]", string(stack))
-		ch <- struct{}{}
+	var wg sync.WaitGroup
+	var active int32
+	var maxActive int32
+
+	for range 12 {
+		wg.Add(1)
+		err := p.Go(context.Background(), func(context.Context) {
+			defer wg.Done()
+
+			current := atomic.AddInt32(&active, 1)
+			for {
+				max := atomic.LoadInt32(&maxActive)
+				if current <= max || atomic.CompareAndSwapInt32(&maxActive, max, current) {
+					break
+				}
+			}
+
+			time.Sleep(10 * time.Millisecond)
+			atomic.AddInt32(&active, -1)
+		})
+		assert.NoError(t, err)
+	}
+
+	waitGroup(t, &wg, time.Second)
+	assert.LessOrEqual(t, atomic.LoadInt32(&maxActive), int32(2))
+}
+
+func TestGoReturnsContextErrorWhenBlocked(t *testing.T) {
+	p := New(1)
+	defer p.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	assert.NoError(t, p.Go(context.Background(), func(context.Context) {
+		defer wg.Done()
+		close(started)
+		<-release
 	}))
-	defer p.Close()
 
-	_ = p.Go(context.Background(), func(ctx context.Context) {
-		sleep1s(ctx)
-		panic("oh my god!")
-	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first task did not start")
+	}
 
-	<-ch
-}
+	wg.Add(1)
+	assert.NoError(t, p.Go(context.Background(), func(context.Context) {
+		defer wg.Done()
+		<-release
+	}))
 
-func TestBlockTimeout(t *testing.T) {
-	ctx := context.Background()
-
-	p := New(1, WithCacheSize(1))
-	defer p.Close()
-
-	// 正常执行
-	err := p.Go(ctx, func(ctx context.Context) {
-		time.Sleep(2 * time.Second)
-		t.Log("done-1")
-	})
-	assert.Nil(t, err)
-
-	// 等待队列
-	err = p.Go(ctx, func(ctx context.Context) {
-		time.Sleep(2 * time.Second)
-		t.Log("done-2")
-	})
-	assert.Nil(t, err)
-
-	// 入缓存队列
-	err = p.Go(ctx, func(ctx context.Context) {
-		time.Sleep(2 * time.Second)
-		t.Log("done-3")
-	})
-	assert.Nil(t, err)
-
-	// 阻塞超时
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	err = p.Go(ctx, func(ctx context.Context) {
-		time.Sleep(2 * time.Second)
-		t.Log("done-4")
+	err := p.Go(ctx, func(context.Context) {
+		t.Fatal("timed-out task should not run")
 	})
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 
-	time.Sleep(10 * time.Second)
+	close(release)
+	waitGroup(t, &wg, time.Second)
 }
 
-// go test -race -run ^TestPoolRace$
-// idle() 中 time.NewTicker(time.Second)
-func TestPoolRace(t *testing.T) {
-	p := New(10, WithIdleTimeout(time.Second))
+func TestGoAfterCloseReturnsErrPoolClosed(t *testing.T) {
+	p := New(1)
+	p.Close()
+
+	err := p.Go(context.Background(), func(context.Context) {
+		t.Fatal("task should not run after Close")
+	})
+	assert.ErrorIs(t, err, ErrPoolClosed)
+}
+
+func TestRecover(t *testing.T) {
+	recovered := make(chan any, 1)
+	p := New(1, WithPanicHandler(func(ctx context.Context, err any, stack []byte) {
+		recovered <- err
+	}))
 	defer p.Close()
 
-	var wg sync.WaitGroup
-	for range 100 {
-		wg.Add(1)
-		_ = p.Go(context.Background(), func(ctx context.Context) {
-			time.Sleep(10 * time.Millisecond)
-		})
-		wg.Done()
-	}
-	wg.Add(1)
-	go func(p Pool) {
-		defer wg.Done()
+	assert.NoError(t, p.Go(context.Background(), func(context.Context) {
+		panic("boom")
+	}))
 
-		v := p.(*pool)
-		for {
-			t.Log(v.workers.Len())
-			if v.workers.Len() == 0 {
-				return
-			}
-			time.Sleep(time.Second)
-		}
-	}(p)
-	wg.Wait()
+	select {
+	case err := <-recovered:
+		assert.Equal(t, "boom", err)
+	case <-time.After(time.Second):
+		t.Fatal("panic handler was not called")
+	}
 }
 
-func TestPoolClose(t *testing.T) {
-	ctx := context.Background()
+func TestWorkerLRUSkipsBusyWorkers(t *testing.T) {
+	lru := NewWorkerLRU()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	for range 100 {
-		p := New(1)
+	w := &worker{id: 1, ctx: ctx, cancel: cancel}
+	lru.Upsert(w)
+	w.keepalive.Store(time.Now().Add(-time.Hour).UnixNano())
+	w.busy.Store(true)
 
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("done-1")
-		})
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("done-2")
-		})
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("done-3")
-		})
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("done-4")
-		})
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("done-5")
-		})
+	lru.IdleCheck(time.Millisecond)
+	assert.Equal(t, 1, lru.Len())
 
-		go p.Close() // 关闭pool
+	w.busy.Store(false)
+	lru.IdleCheck(time.Millisecond)
+	assert.Equal(t, 0, lru.Len())
 
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("closed-1")
-		})
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("closed-2")
-		})
-		_ = p.Go(ctx, func(ctx context.Context) {
-			t.Log("closed-3")
-		})
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("idle worker was not canceled")
+	}
+}
 
-		time.Sleep(100 * time.Millisecond)
+func TestCloseIsIdempotent(t *testing.T) {
+	p := New(1)
+	p.Close()
+	p.Close()
 
-		fmt.Println("=========")
+	err := p.Go(context.Background(), func(context.Context) {})
+	assert.True(t, errors.Is(err, ErrPoolClosed))
+}
+
+func waitGroup(t *testing.T, wg *sync.WaitGroup, timeout time.Duration) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for tasks")
 	}
 }

@@ -2,139 +2,122 @@ package timewheel
 
 import (
 	"context"
-	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/noble-gase/xenon/worker"
+	"github.com/stretchr/testify/assert"
 )
 
-// TestTimeWheel 测试时间轮
-func TestTimeWheel(t *testing.T) {
-	ctx := context.Background()
+func TestTimeWheelRunsAndRetriesTask(t *testing.T) {
+	tw := New(
+		WithTimeLevel(Level(8, 10*time.Millisecond)),
+		WithWorkerPool(worker.New(2, worker.WithCacheSize(4))),
+	)
+	defer tw.Stop()
 
-	ch := make(chan string)
-	defer close(ch)
-
-	Init()
-	defer Stop()
-
-	addedAt := time.Now()
-
-	fmt.Println("=============", "[now]", addedAt.Format(time.DateTime), "======================")
-
-	// 分层槽位
-	Go(ctx, "level-minute", func(ctx context.Context, task *Task) time.Duration {
-		return 0
-	}, time.Now().Add(5*time.Minute))
-	Go(ctx, "level-hour", func(ctx context.Context, task *Task) time.Duration {
-		return 0
-	}, time.Now().Add(5*time.Hour))
-
-	// 立即执行
-	Go(ctx, "task-1", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] [%d] run at %s, duration %s", task.ID(), task.Attempts(), time.Now().Format(time.DateTime), time.Since(addedAt).String())
+	attempts := make(chan int, 3)
+	tw.Go(context.Background(), "retry", func(ctx context.Context, task *Task) time.Duration {
+		attempts <- task.Attempts()
+		if task.Attempts() < 3 {
+			return 10 * time.Millisecond
+		}
 		return 0
 	}, time.Now())
 
-	// 精度 < 1s，延迟到 1s 执行
-	Go(ctx, "task-2", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] [%d] run at %s, duration %s", task.ID(), task.Attempts(), time.Now().Format(time.DateTime), time.Since(addedAt).String())
+	assert.Equal(t, 1, receiveInt(t, attempts, time.Second))
+	assert.Equal(t, 2, receiveInt(t, attempts, time.Second))
+	assert.Equal(t, 3, receiveInt(t, attempts, time.Second))
+}
+
+func TestTaskCancelCallsCancelFn(t *testing.T) {
+	canceled := make(chan string, 1)
+	tw := New(
+		WithTimeLevel(Level(8, 20*time.Millisecond)),
+		WithWorkerPool(worker.New(1, worker.WithCacheSize(2))),
+		WithCancelFn(func(ctx context.Context, task *Task) {
+			canceled <- task.ID()
+		}),
+	)
+	defer tw.Stop()
+
+	task := tw.Go(context.Background(), "cancel-me", func(ctx context.Context, task *Task) time.Duration {
+		t.Fatal("canceled task should not run")
 		return 0
-	}, time.Now().Add(200*time.Millisecond))
+	}, time.Now().Add(10*time.Millisecond))
+	task.Cancel(context.Canceled)
 
-	Go(ctx, "task-3", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] [%d] run at %s, duration %s", task.ID(), task.Attempts(), time.Now().Format(time.DateTime), time.Since(addedAt).String())
-		if task.Attempts() >= 9 {
-			return 0
-		}
-		if (task.Attempts()+1)%2 == 0 {
-			return time.Second * 2
-		}
-		return time.Second
-	}, time.Now().Add(time.Second))
-
-	for range 11 {
-		fmt.Println(<-ch)
+	select {
+	case id := <-canceled:
+		assert.Equal(t, "cancel-me", id)
+	case <-time.After(time.Second):
+		t.Fatal("cancel handler was not called")
 	}
 }
 
-func TestTaskCancel(t *testing.T) {
-	ctx := context.Background()
+func TestContextDonePreventsTaskExecution(t *testing.T) {
+	canceled := make(chan string, 1)
+	tw := New(
+		WithTimeLevel(Level(8, 20*time.Millisecond)),
+		WithWorkerPool(worker.New(1, worker.WithCacheSize(2))),
+		WithCancelFn(func(ctx context.Context, task *Task) {
+			canceled <- task.ID()
+		}),
+	)
+	defer tw.Stop()
 
-	ch := make(chan string)
-	defer close(ch)
-
-	Init(WithCancelFn(func(ctx context.Context, task *Task) {
-		ch <- fmt.Sprintf("task [%s] canceled", task.ID())
-	}))
-	defer Stop()
-
-	addedAt := time.Now()
-
-	fmt.Println("=========", "[now]", addedAt.Format(time.DateTime), "======================")
-
-	task := Go(ctx, "task-1", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] done", task.ID())
-		return 0
-	}, time.Now().Add(2*time.Second))
-	task.Cancel(nil)
-
-	_ = Go(ctx, "task-2", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] run at %s, duration %s", task.ID(), time.Now().Format(time.DateTime), time.Since(addedAt).String())
-		return 0
-	}, time.Now().Add(6*time.Second))
-
-	_ = Go(ctx, "task-3", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] run at %s, duration %s", task.ID(), time.Now().Format(time.DateTime), time.Since(addedAt).String())
-		return 0
-	}, time.Now().Add(7*time.Second))
-
-	_ = Go(ctx, "task-4", func(ctx context.Context, task *Task) time.Duration {
-		ch <- fmt.Sprintf("[%s] run at %s, duration %s", task.ID(), time.Now().Format(time.DateTime), time.Since(addedAt).String())
-		return 0
-	}, time.Now().Add(8*time.Second))
-
-	for range 4 {
-		fmt.Println(<-ch)
-	}
-}
-
-// TestCtxDone 测试任务context done
-func TestCtxDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	Init(WithCancelFn(func(ctx context.Context, task *Task) {
-		fmt.Println("[task]", task.ID())
-		fmt.Println("[error]", ctx.Err())
-		cancel()
-	}))
-	defer Stop()
-
-	addedAt := time.Now()
-
-	taskCtx, taskCancel := context.WithTimeout(context.Background(), time.Millisecond*200)
-	defer taskCancel()
-	Go(taskCtx, "task-1", func(ctx context.Context, task *Task) time.Duration {
-		fmt.Println("task run after", time.Since(addedAt).String())
+	tw.Go(ctx, "ctx-cancel", func(ctx context.Context, task *Task) time.Duration {
+		t.Fatal("task with canceled context should not run")
 		return 0
-	}, time.Now().Add(time.Second))
+	}, time.Now().Add(10*time.Millisecond))
+	cancel()
 
-	<-ctx.Done()
+	select {
+	case id := <-canceled:
+		assert.Equal(t, "ctx-cancel", id)
+	case <-time.After(time.Second):
+		t.Fatal("cancel handler was not called")
+	}
 }
 
-// TestPanic 测试Panic
-func TestPanic(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+func TestStopPreventsPendingTaskExecution(t *testing.T) {
+	tw := New(
+		WithTimeLevel(Level(8, 20*time.Millisecond)),
+		WithWorkerPool(worker.New(1, worker.WithCacheSize(2))),
+	)
 
-	Init()
-	defer Stop()
+	var ran int32
+	tw.Go(context.Background(), "pending", func(ctx context.Context, task *Task) time.Duration {
+		atomic.AddInt32(&ran, 1)
+		return 0
+	}, time.Now().Add(30*time.Millisecond))
+	tw.Stop()
 
-	addedAt := time.Now()
+	time.Sleep(80 * time.Millisecond)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&ran))
+}
 
-	Go(ctx, "task-1", func(ctx context.Context, task *Task) time.Duration {
-		fmt.Println("task run after", time.Since(addedAt).String())
-		panic("oh no!")
-	}, time.Now().Add(time.Second))
+func TestBucketResetReturnsPreviousTasks(t *testing.T) {
+	bucket := NewBucket()
+	task := &Task{id: "task-1"}
+	bucket.Add(task)
 
-	<-ctx.Done()
+	old := bucket.Reset()
+	assert.Equal(t, 1, old.Len())
+	assert.Same(t, task, old.Front().Value)
+	assert.Equal(t, 0, bucket.Reset().Len())
+}
+
+func receiveInt(t *testing.T, ch <-chan int, timeout time.Duration) int {
+	t.Helper()
+
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for value")
+		return 0
+	}
 }

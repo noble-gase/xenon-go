@@ -48,6 +48,8 @@ type pool struct {
 
 	panicFn PanicFn
 
+	done chan struct{} // run 退出信号
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -73,6 +75,9 @@ func (p *pool) Close() {
 	// 销毁协程
 	p.cancel()
 
+	// 等待 run 退出，避免任务丢失
+	<-p.done
+
 	// 处理剩余的任务
 	for {
 		select {
@@ -85,14 +90,14 @@ func (p *pool) Close() {
 }
 
 func (p *pool) run() {
+	defer close(p.done)
+
 	for {
 		select {
 		case <-p.ctx.Done(): // Pool关闭
 			return
 		case v := <-p.input:
 			select {
-			case <-p.ctx.Done(): // Pool关闭
-				return
 			case p.queue <- v:
 			default:
 				// 未达上限，新开一个协程
@@ -101,7 +106,8 @@ func (p *pool) run() {
 				}
 				// 等待闲置协程
 				select {
-				case <-p.ctx.Done(): // Pool关闭
+				case <-p.ctx.Done(): // Pool关闭，执行持有的任务后退出，防止丢失
+					p.do(v)
 					return
 				case p.queue <- v:
 				case p.cache <- v:
@@ -146,14 +152,24 @@ func (p *pool) spawn() {
 			case <-wk.ctx.Done(): // 闲置超时，销毁
 				return
 			case v := <-p.queue: // 从队列获取任务
-				p.workers.Upsert(wk)
-				p.do(v)
+				p.exec(wk, v)
 			case v := <-p.cache: // 从缓存获取任务
-				p.workers.Upsert(wk)
-				p.do(v)
+				p.exec(wk, v)
 			}
 		}
 	}()
+}
+
+func (p *pool) exec(wk *worker, v *task) {
+	// 标记执行中，防止被 IdleCheck 误杀
+	wk.busy.Store(true)
+	p.workers.Upsert(wk)
+
+	p.do(v)
+
+	// 刷新 keepalive 后再解除标记，避免竞态
+	p.workers.Upsert(wk)
+	wk.busy.Store(false)
 }
 
 func (p *pool) do(task *task) {
@@ -188,6 +204,8 @@ func New(cap int, opts ...Option) Pool {
 		workers: NewWorkerLRU(),
 
 		idleTimeout: 10 * time.Minute,
+
+		done: make(chan struct{}),
 
 		ctx:    ctx,
 		cancel: cancel,
