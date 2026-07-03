@@ -103,9 +103,9 @@ func (g *group) Go(fn func(ctx context.Context) error) {
 }
 
 func (g *group) Wait() error {
-	defer g.cancel(nil)
-
 	g.wg.Wait()
+	// 所有任务完成后取消派生context
+	g.cancel(nil)
 
 	if g.cond != nil {
 		g.mutex.Lock()
