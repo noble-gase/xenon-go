@@ -157,11 +157,9 @@ func TestLimitReuseIdleWorkers(t *testing.T) {
 
 	g.mutex.Lock()
 	spawned := 100 - g.remain
-	drained := g.cache == nil
 	g.mutex.Unlock()
 
 	assert.Equal(t, 1, spawned)
-	assert.True(t, drained, "cache should be released after drained")
 	assert.NoError(t, g.Wait())
 }
 

@@ -39,7 +39,7 @@ type group struct {
 
 	mutex  sync.Mutex
 	cond   *sync.Cond // 仅限制并发数时初始化
-	cache  []func(ctx context.Context) error
+	tasks  []func(ctx context.Context) error
 	remain int
 	idle   int
 	closed bool
@@ -91,10 +91,10 @@ func (g *group) Go(fn func(ctx context.Context) error) {
 	}
 
 	g.wg.Add(1)
-	g.cache = append(g.cache, fn)
+	g.tasks = append(g.tasks, fn)
 	// 积压任务超过空闲协程消费能力且未达上限时，新开一个协程；
 	// 否则复用空闲协程
-	if len(g.cache) > g.idle && g.remain > 0 {
+	if len(g.tasks) > g.idle && g.remain > 0 {
 		g.remain--
 		g.spawn()
 	}
@@ -103,6 +103,8 @@ func (g *group) Go(fn func(ctx context.Context) error) {
 }
 
 func (g *group) Wait() error {
+	defer g.cancel(nil)
+
 	g.wg.Wait()
 
 	if g.cond != nil {
@@ -114,12 +116,6 @@ func (g *group) Wait() error {
 		g.cond.Broadcast()
 	}
 
-	select {
-	case <-g.ctx.Done():
-	default:
-		g.cancel(nil)
-	}
-
 	return g.err
 }
 
@@ -127,21 +123,21 @@ func (g *group) spawn() {
 	go func() {
 		for {
 			g.mutex.Lock()
-			for len(g.cache) == 0 && !g.closed {
+			for len(g.tasks) == 0 && !g.closed {
 				g.idle++
 				g.cond.Wait()
 				g.idle--
 			}
 			// 已关闭且无剩余任务，退出
-			if len(g.cache) == 0 {
+			if len(g.tasks) == 0 {
 				g.mutex.Unlock()
 				return
 			}
 
 			// 取出一个任务
-			fn := g.cache[0]
-			g.cache[0] = nil // 避免引用滞留
-			g.cache = g.cache[1:]
+			fn := g.tasks[0]
+			g.tasks[0] = nil // 避免引用滞留
+			g.tasks = g.tasks[1:]
 			g.mutex.Unlock()
 
 			// 执行任务
