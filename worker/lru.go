@@ -10,8 +10,8 @@ import (
 
 type worker struct {
 	id        int64
-	keepalive atomic.Int64
 	busy      atomic.Bool
+	keepalive atomic.Int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
