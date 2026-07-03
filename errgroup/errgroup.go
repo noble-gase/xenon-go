@@ -123,15 +123,15 @@ func (g *group) spawn() {
 	go func() {
 		for {
 			g.mutex.Lock()
-			for len(g.tasks) == 0 && !g.closed {
+			for len(g.tasks) == 0 {
+				if g.closed {
+					g.mutex.Unlock()
+					return
+				}
+
 				g.idle++
 				g.cond.Wait()
 				g.idle--
-			}
-			// 已关闭且无剩余任务，退出
-			if len(g.tasks) == 0 {
-				g.mutex.Unlock()
-				return
 			}
 
 			// 取出一个任务
