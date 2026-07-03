@@ -129,7 +129,7 @@ func (g *group) spawn() {
 					return
 				}
 
-				// 当前无任务，进入等待；唤醒后重新检查任务或关闭状态
+				// 当前无任务，进入等待；唤醒后重新检查任务和关闭状态
 				g.idle++
 				g.cond.Wait()
 				g.idle--
