@@ -9,7 +9,8 @@ import (
 )
 
 type worker struct {
-	id        int64
+	id int64
+
 	busy      atomic.Bool
 	keepalive atomic.Int64
 
@@ -41,7 +42,7 @@ func (lru *WorkerLRU) Upsert(w *worker) {
 		lru.wkList.MoveToFront(e)
 		return
 	}
-
+	// 不存在，插入头部
 	lru.wkMap[w.id] = lru.wkList.PushFront(w)
 }
 
@@ -54,25 +55,19 @@ func (lru *WorkerLRU) IdleCheck(timeout time.Duration) {
 	for e := lru.wkList.Back(); e != nil; {
 		w := e.Value.(*worker)
 
-		// 任务执行中，跳过
-		if w.busy.Load() {
-			e = e.Prev()
-			continue
-		}
-
 		// 未超时，直接结束
 		if now-w.keepalive.Load() < timeout.Nanoseconds() {
 			break
 		}
 
 		prev := e.Prev()
-
-		// 超时，移除worker
-		lru.wkList.Remove(e)
-		delete(lru.wkMap, w.id)
-		// 取消，关闭协程
-		w.cancel()
-
+		// 超时，且无任务执行，移除
+		if !w.busy.Load() {
+			lru.wkList.Remove(e)
+			delete(lru.wkMap, w.id)
+			// 取消，关闭协程
+			w.cancel()
+		}
 		e = prev
 	}
 }
