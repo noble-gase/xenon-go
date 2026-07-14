@@ -218,30 +218,13 @@ func (tw *timewheel) do(task *Task) {
 	default:
 	}
 
-	// 残余延迟交由运行时定时器（时间堆）等待，期间不占用任何协程；
-	// 到期后任务才提交进协程池执行
-	if delay := time.Until(task.execTime); delay > 0 {
-		time.AfterFunc(delay, func() {
-			tw.submit(task)
-		})
-		return
-	}
-	tw.submit(task)
-}
-
-func (tw *timewheel) submit(task *Task) {
-	select {
-	case <-tw.ctx.Done(): // 时间轮停止
-		return
-	case <-task.ctx.Done(): // 任务被取消
-		if tw.cancelFn != nil {
-			tw.cancelFn(task.ctx, task)
-		}
-		return
-	default:
-	}
-
+	// time.Sleep vs time.AfterFunc：
+	//  - Sleep：先入池后等待，排队耗时发生在等待前且被重新计算的剩余延迟抵消，精度高；
+	//    等待期间占用池协程，但不超过一个最小精度周期，影响可忽略；
+	//  - AfterFunc：先等待后入池，等待期间不占协程，但到期后才入池，排队耗时直接成为迟到误差（批量到期时可达秒级）
 	_ = tw.pool.Go(task.ctx, func(ctx context.Context) {
+		time.Sleep(time.Until(task.execTime))
+
 		select {
 		case <-tw.ctx.Done(): // 时间轮停止
 			return
