@@ -25,7 +25,7 @@ func BenchmarkGoroutines(b *testing.B) {
 	ctx := context.TODO()
 
 	var wg sync.WaitGroup
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wg.Add(RunTimes)
 		for range int(RunTimes) {
 			go func() {
@@ -44,8 +44,7 @@ func BenchmarkChannel(b *testing.B) {
 	var wg sync.WaitGroup
 	sema := make(chan struct{}, PoolCap)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wg.Add(RunTimes)
 		for range int(RunTimes) {
 			sema <- struct{}{}
@@ -67,8 +66,7 @@ func BenchmarkErrGroup(b *testing.B) {
 	var eg errgroup.Group
 	eg.SetLimit(PoolCap)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wg.Add(RunTimes)
 		for range int(RunTimes) {
 			eg.Go(func() error {
@@ -88,10 +86,8 @@ func BenchmarkWorkerPool(b *testing.B) {
 	p := New(PoolCap)
 	defer p.Close()
 
-	b.ResetTimer()
-
 	var wg sync.WaitGroup
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wg.Add(RunTimes)
 		for range int(RunTimes) {
 			_ = p.Go(ctx, func(ctx context.Context) {
@@ -107,7 +103,7 @@ func BenchmarkGoroutinesThroughput(b *testing.B) {
 	runtime.GOMAXPROCS(1)
 	ctx := context.TODO()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for range int(RunTimes) {
 			go demoFunc(ctx)
 		}
@@ -119,7 +115,7 @@ func BenchmarkSemaphoreThroughput(b *testing.B) {
 	ctx := context.TODO()
 
 	sema := make(chan struct{}, PoolCap)
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for range int(RunTimes) {
 			sema <- struct{}{}
 			go func() {
@@ -137,8 +133,7 @@ func BenchmarkWorkerPoolThroughput(b *testing.B) {
 	p := New(PoolCap)
 	defer p.Close()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for range int(RunTimes) {
 			_ = p.Go(ctx, demoFunc)
 		}

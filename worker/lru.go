@@ -46,6 +46,21 @@ func (lru *WorkerLRU) Upsert(w *worker) {
 	lru.wkMap[w.id] = lru.wkList.PushFront(w)
 }
 
+// Remove 移除指定协程，幂等。协程退出时自行调用，
+// 确保异常退出（panic 等）的协程也能从 LRU 中摘除
+func (lru *WorkerLRU) Remove(w *worker) {
+	lru.mutex.Lock()
+	defer lru.mutex.Unlock()
+
+	e, ok := lru.wkMap[w.id]
+	if !ok {
+		return
+	}
+
+	lru.wkList.Remove(e)
+	delete(lru.wkMap, w.id)
+}
+
 func (lru *WorkerLRU) IdleCheck(timeout time.Duration) {
 	lru.mutex.Lock()
 	defer lru.mutex.Unlock()
@@ -61,12 +76,15 @@ func (lru *WorkerLRU) IdleCheck(timeout time.Duration) {
 		}
 
 		prev := e.Prev()
-		// 超时，且无任务执行，移除
+		// 超时，且无任务执行，移除。
+		// 两步在同一次持锁内完成，Upsert 进不来，顺序本无差别；
+		// 仍与 retire 统一为 cancel-first，防止将来拆细锁或插入提前返回时漏掉那个窗口
 		if !w.busy.Load() {
-			lru.wkList.Remove(e)
-			delete(lru.wkMap, w.id)
 			// 取消，关闭协程
 			w.cancel()
+
+			lru.wkList.Remove(e)
+			delete(lru.wkMap, w.id)
 		}
 		e = prev
 	}

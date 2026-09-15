@@ -31,3 +31,6 @@ go.work.sum
 
 # VSCode
 .vscode/
+
+# Agent
+.claude

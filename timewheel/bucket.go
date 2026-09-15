@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -15,8 +14,6 @@ type Task struct {
 	execFunc TaskFn    // 任务执行函数
 	execTime time.Time // 任务执行时间
 
-	attempts atomic.Int32 // 当前任务执行的次数
-
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 }
@@ -26,34 +23,51 @@ func (t *Task) ID() string {
 	return t.id
 }
 
-// Attempts 返回任务执行的次数
-func (t *Task) Attempts() int {
-	return int(t.attempts.Load())
-}
-
 // Cancel 取消任务
 func (t *Task) Cancel(err error) {
 	t.cancel(err)
 }
 
 type Bucket struct {
-	list  *list.List
+	list   *list.List
+	closed bool
+
 	mutex sync.Mutex
 }
 
-func (b *Bucket) Add(t *Task) {
+// Add 任务入槽位，槽位已关闭时返回 false
+func (b *Bucket) Add(t *Task) bool {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+
+	if b.closed {
+		return false
+	}
 
 	if b.list == nil {
 		b.list = list.New()
 	}
 	b.list.PushBack(t)
+
+	return true
 }
 
+// Reset 取出并清空槽位内的任务
 func (b *Bucket) Reset() *list.List {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+
+	old := b.list
+	b.list = list.New()
+	return old
+}
+
+// Close 关闭槽位并取出残留任务，后续 Add 均失败
+func (b *Bucket) Close() *list.List {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	b.closed = true
 
 	old := b.list
 	b.list = list.New()
